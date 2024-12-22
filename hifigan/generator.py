@@ -14,7 +14,7 @@ LRELU_SLOPE = 0.1
 class HifiganGenerator(torch.nn.Module):
     def __init__(
         self,
-        in_channels: int = 128,
+        in_channels: int = 80,
         resblock_dilation_sizes: Tuple[Tuple[int, ...], ...] = (
             (1, 3, 5),
             (1, 3, 5),
@@ -25,7 +25,7 @@ class HifiganGenerator(torch.nn.Module):
         upsample_initial_channel: int = 512,
         upsample_factors: int = (10, 4, 2, 2),
         inference_padding: int = 5,
-        sample_rate: int = 16000,
+        sample_rate: int = 22050,
     ):
         r"""HiFiGAN Generator
         Args:

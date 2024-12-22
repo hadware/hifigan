@@ -50,7 +50,7 @@ if __name__ == "__main__":
         "--sample-rate",
         help="target sample rate (default 16kHz)",
         type=int,
-        default=16000,
+        default=22050,
     )
     args = parser.parse_args()
     preprocess_dataset(args)

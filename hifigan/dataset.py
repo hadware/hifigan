@@ -15,15 +15,15 @@ class LogMelSpectrogram(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.melspctrogram = transforms.MelSpectrogram(
-            sample_rate=16000,
+            sample_rate=22050,
             n_fft=1024,
             win_length=1024,
-            hop_length=160,
+            hop_length=256,
             center=False,
             power=1.0,
             norm="slaney",
             onesided=True,
-            n_mels=128,
+            n_mels=80,
             mel_scale="slaney",
         )
 
