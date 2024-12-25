@@ -3,29 +3,27 @@ import logging
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-import torch.distributed as dist
-from torch.utils.data.distributed import DistributedSampler
-import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
-from hifigan.generator import HifiganGenerator
+from hifigan.dataset import MelDataset, LogMelSpectrogram
 from hifigan.discriminator import (
     HifiganDiscriminator,
     feature_loss,
     discriminator_loss,
     generator_loss,
 )
-from hifigan.dataset import MelDataset, LogMelSpectrogram
+from hifigan.generator import HifiganGenerator
 from hifigan.utils import load_checkpoint, save_checkpoint, plot_spectrogram
 
-
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
 
 BATCH_SIZE = 8
 SEGMENT_LENGTH = 8320
@@ -166,7 +164,8 @@ def train_model(rank, world_size, args):
         generator.train()
         discriminator.train()
         average_loss_mel = average_loss_discriminator = average_loss_generator = 0
-        for i, (wavs, mels, tgts) in enumerate(train_loader, 1):
+        for i, (wavs, mels, tgts) in tqdm(enumerate(train_loader, 1),
+                                          desc=f"Train [Epoch {epoch}]"):
             wavs, mels, tgts = wavs.to(rank), mels.to(rank), tgts.to(rank)
 
             # Discriminator
@@ -229,7 +228,8 @@ def train_model(rank, world_size, args):
                 generator.eval()
 
                 average_validation_loss = 0
-                for j, (wavs, mels, tgts) in enumerate(validation_loader, 1):
+                for j, (wavs, mels, tgts) in tqdm(enumerate(validation_loader, 1),
+                                                  desc=f"Val [Epoch {epoch}]"):
                     wavs, mels, tgts = wavs.to(rank), mels.to(rank), tgts.to(rank)
 
                     with torch.no_grad():

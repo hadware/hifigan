@@ -92,7 +92,7 @@ class MelDataset(Dataset):
             frame_offset = random.randint(0, max(frame_diff, 0))
 
         wav, _ = torchaudio.load(
-            filepath=wav_path.with_suffix(".wav"),
+            uri=wav_path.with_suffix(".wav"),
             frame_offset=frame_offset if self.train else 0,
             num_frames=self.segment_length if self.train else -1,
         )

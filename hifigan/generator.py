@@ -20,10 +20,10 @@ class HifiganGenerator(torch.nn.Module):
             (1, 3, 5),
             (1, 3, 5),
         ),
-        resblock_kernel_sizes: Tuple[int, ...] = (3, 7, 11),
-        upsample_kernel_sizes: Tuple[int, ...] = (20, 8, 4, 4),
+        resblock_kernel_sizes: tuple[int, ...] = (3, 7, 11),
+        upsample_kernel_sizes: tuple[int, ...] = (20, 8, 4, 4),
         upsample_initial_channel: int = 512,
-        upsample_factors: int = (10, 4, 2, 2),
+        upsample_factors: tuple[int, ...] = (10, 4, 2, 2),
         inference_padding: int = 5,
         sample_rate: int = 16000,
     ):
