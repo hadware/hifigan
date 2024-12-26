@@ -1,4 +1,3 @@
-import argparse
 import logging
 from pathlib import Path
 
@@ -7,6 +6,8 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
 import torch.optim as optim
+import yaml
+from tap import Tap
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -25,23 +26,10 @@ from hifigan.utils import load_checkpoint, save_checkpoint, plot_spectrogram
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 8
-SEGMENT_LENGTH = 8320
-HOP_LENGTH = 160
-SAMPLE_RATE = 16000
-BASE_LEARNING_RATE = 2e-4
-FINETUNE_LEARNING_RATE = 1e-4
 BETAS = (0.8, 0.99)
-LEARNING_RATE_DECAY = 0.999
-WEIGHT_DECAY = 1e-5
-EPOCHS = 3100
-LOG_INTERVAL = 5
-VALIDATION_INTERVAL = 1000
-NUM_GENERATED_EXAMPLES = 10
-CHECKPOINT_INTERVAL = 5000
 
 
-def train_model(rank, world_size, args):
+def train_model(rank, world_size, args: 'TrainCommandParser'):
     dist.init_process_group(
         "nccl",
         rank=rank,
@@ -53,20 +41,21 @@ def train_model(rank, world_size, args):
     log_dir.mkdir(exist_ok=True, parents=True)
 
     if rank == 0:
-        logger.setLevel(logging.DEBUG)
-        handler = logging.FileHandler(log_dir / f"{args.checkpoint_dir.stem}.log")
-        handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%m/%d/%Y %I:%M:%S"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
     else:
         logger.setLevel(logging.ERROR)
 
     writer = SummaryWriter(log_dir) if rank == 0 else None
 
-    generator = HifiganGenerator().to(rank)
+    if args.generator_config is not None:
+        with args.generator_config.open("r") as f:
+            generator_config = yaml.safe_load(f)
+        generator = HifiganGenerator(**generator_config).to(rank)
+    else:
+        generator = HifiganGenerator().to(rank)
+    logger.info("Generator:")
+    logger.info(generator)
+
     discriminator = HifiganDiscriminator().to(rank)
 
     generator = DDP(generator, device_ids=[rank])
@@ -74,36 +63,36 @@ def train_model(rank, world_size, args):
 
     optimizer_generator = optim.AdamW(
         generator.parameters(),
-        lr=BASE_LEARNING_RATE if not args.finetune else FINETUNE_LEARNING_RATE,
+        lr=args.base_learning_rate if not args.finetune else args.finetune_learning_rate,
         betas=BETAS,
-        weight_decay=WEIGHT_DECAY,
+        weight_decay=args.weight_decay,
     )
     optimizer_discriminator = optim.AdamW(
         discriminator.parameters(),
-        lr=BASE_LEARNING_RATE if not args.finetune else FINETUNE_LEARNING_RATE,
+        lr=args.base_learning_rate if not args.finetune else args.finetune_learning_rate,
         betas=BETAS,
-        weight_decay=WEIGHT_DECAY,
+        weight_decay=args.weight_decay,
     )
 
     scheduler_generator = optim.lr_scheduler.ExponentialLR(
-        optimizer_generator, gamma=LEARNING_RATE_DECAY
+        optimizer_generator, gamma=args.learning_rate_decay
     )
     scheduler_discriminator = optim.lr_scheduler.ExponentialLR(
-        optimizer_discriminator, gamma=LEARNING_RATE_DECAY
+        optimizer_discriminator, gamma=args.learning_rate_decay
     )
 
     train_dataset = MelDataset(
         root=args.dataset_dir,
-        segment_length=SEGMENT_LENGTH,
-        sample_rate=SAMPLE_RATE,
-        hop_length=HOP_LENGTH,
+        segment_length=args.segment_length,
+        sample_rate=args.sample_rate,
+        hop_length=args.hop_length,
         train=True,
         finetune=args.finetune,
     )
     train_sampler = DistributedSampler(train_dataset, drop_last=True)
     train_loader = DataLoader(
         train_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=args.batch_size,
         sampler=train_sampler,
         num_workers=8,
         pin_memory=True,
@@ -113,9 +102,9 @@ def train_model(rank, world_size, args):
 
     validation_dataset = MelDataset(
         root=args.dataset_dir,
-        segment_length=SEGMENT_LENGTH,
-        sample_rate=SAMPLE_RATE,
-        hop_length=HOP_LENGTH,
+        segment_length=args.segment_length,
+        sample_rate=args.sample_rate,
+        hop_length=args.hop_length,
         train=False,
         finetune=args.finetune,
     )
@@ -148,11 +137,11 @@ def train_model(rank, world_size, args):
     if args.finetune:
         global_step, best_loss = 0, float("inf")
 
-    n_epochs = EPOCHS
+    n_epochs = args.epochs
     start_epoch = global_step // len(train_loader) + 1
 
     logger.info("**" * 40)
-    logger.info(f"batch size: {BATCH_SIZE}")
+    logger.info(f"batch size: {args.batch_size}")
     logger.info(f"iterations per epoch: {len(train_loader)}")
     logger.info(f"total of epochs: {n_epochs}")
     logger.info(f"started at epoch: {start_epoch}")
@@ -164,8 +153,7 @@ def train_model(rank, world_size, args):
         generator.train()
         discriminator.train()
         average_loss_mel = average_loss_discriminator = average_loss_generator = 0
-        for i, (wavs, mels, tgts) in tqdm(enumerate(train_loader, 1),
-                                          desc=f"Train [Epoch {epoch}]"):
+        for i, (wavs, mels, tgts) in enumerate(tqdm(train_loader, desc=f"Train [Epoch {epoch}]"), 1):
             wavs, mels, tgts = wavs.to(rank), mels.to(rank), tgts.to(rank)
 
             # Discriminator
@@ -200,14 +188,14 @@ def train_model(rank, world_size, args):
 
             average_loss_mel += (loss_mel.item() - average_loss_mel) / i
             average_loss_discriminator += (
-                loss_discriminator.item() - average_loss_discriminator
-            ) / i
+                                                  loss_discriminator.item() - average_loss_discriminator
+                                          ) / i
             average_loss_generator += (
-                loss_generator.item() - average_loss_generator
-            ) / i
+                                              loss_generator.item() - average_loss_generator
+                                      ) / i
 
             if rank == 0:
-                if global_step % LOG_INTERVAL == 0:
+                if global_step % args.log_interval == 0:
                     writer.add_scalar(
                         "train/loss_mel",
                         loss_mel.item(),
@@ -224,7 +212,7 @@ def train_model(rank, world_size, args):
                         global_step,
                     )
 
-            if global_step % VALIDATION_INTERVAL == 0:
+            if global_step % args.validation_interval == 0:
                 generator.eval()
 
                 average_validation_loss = 0
@@ -241,11 +229,11 @@ def train_model(rank, world_size, args):
                         loss_mel = F.l1_loss(mels_[..., :length], tgts[..., :length])
 
                     average_validation_loss += (
-                        loss_mel.item() - average_validation_loss
-                    ) / j
+                                                       loss_mel.item() - average_validation_loss
+                                               ) / j
 
                     if rank == 0:
-                        if j <= NUM_GENERATED_EXAMPLES:
+                        if j <= args.num_generated_examples:
                             writer.add_audio(
                                 f"generated/wav_{j}",
                                 wavs_.squeeze(0),
@@ -270,7 +258,7 @@ def train_model(rank, world_size, args):
                     )
 
                 new_best = best_loss > average_validation_loss
-                if new_best or global_step % CHECKPOINT_INTERVAL == 0:
+                if new_best or global_step % args.checkpoint_interval == 0:
                     if new_best:
                         logger.info("-------- new best model found!")
                         best_loss = average_validation_loss
@@ -300,31 +288,34 @@ def train_model(rank, world_size, args):
     dist.destroy_process_group()
 
 
+class TrainCommandParser(Tap):
+    dataset_dir: Path  # path to the preprocessed data directory
+    checkpoint_dir: Path  # path to the checkpoint directory
+    resume: Path = None
+    finetune: bool = False
+    generator_config: Path = None
+
+    batch_size: int = 8
+    segment_length: int = 8320
+    hop_length: int = 160
+    sample_rate: int = 16000
+    base_learning_rate: float = 2e-4
+    finetune_learning_rate: float = 1e-4
+    learning_rate_decay: float = 0.999
+    weight_decay: float = 1e-5
+    epochs: int = 3100
+    log_interval: int = 5
+    validation_interval: int = 1000
+    num_generated_examples: int = 10
+    checkpoint_interval: int = 5000
+
+    def configure(self) -> None:
+        self.add_argument("dataset_dir")
+        self.add_argument("checkpoint_dir")
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train or finetune HiFi-GAN.")
-    parser.add_argument(
-        "dataset_dir",
-        metavar="dataset-dir",
-        help="path to the preprocessed data directory",
-        type=Path,
-    )
-    parser.add_argument(
-        "checkpoint_dir",
-        metavar="checkpoint-dir",
-        help="path to the checkpoint directory",
-        type=Path,
-    )
-    parser.add_argument(
-        "--resume",
-        help="path to the checkpoint to resume from",
-        type=Path,
-    )
-    parser.add_argument(
-        "--finetune",
-        help="whether to finetune (note that a resume path must be given)",
-        action="store_true",
-    )
-    args = parser.parse_args()
+    args = TrainCommandParser().parse_args()
 
     # display training setup info
     logger.info(f"PyTorch version: {torch.__version__}")

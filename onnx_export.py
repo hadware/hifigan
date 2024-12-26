@@ -3,10 +3,11 @@ from pathlib import Path
 from typing import Literal
 
 import torch
+import yaml
 from tap import Tap
-from torch.nn.parallel import DistributedDataParallel
 
 from hifigan.generator import HifiganGenerator
+
 
 class HifiganONNX(torch.nn.Module):
     def __init__(self, generator: HifiganGenerator):
@@ -23,6 +24,7 @@ class ExportOnnxParser(Tap):
     model_path: Path
     out_path: Path
     model_type: Literal['full', 'generator'] = 'full'
+    generator_config : Path = None
 
     def configure(self) -> None:
         self.add_argument("model_path")
@@ -33,12 +35,18 @@ if __name__ == '__main__':
     args = ExportOnnxParser().parse_args()
 
     if args.model_type == 'full':
+
         state_dict = torch.load(args.model_path, map_location=torch.device('cpu'), weights_only=True)
         state_dict = state_dict["generator"]["model"]
         # removing shitty prefix from state dict keys
         prefix_l = len("module.")
         state_dict = OrderedDict((k[prefix_l:],v) for k, v in state_dict.items())
-        model = HifiganGenerator()
+        if args.generator_config is not None:
+            with args.generator_config.open("r") as f:
+                generator_config = yaml.safe_load(f)
+            model = HifiganGenerator(**generator_config)
+        else:
+            model = HifiganGenerator()
         model.load_state_dict(state_dict=state_dict)
     else:
         torch.serialization.add_safe_globals([HifiganGenerator])
